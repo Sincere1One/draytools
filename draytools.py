@@ -29,20 +29,36 @@ from collections import defaultdict
 
 from pydelzo import pydelzo, LZO_ERROR
 
+#from hashlib import md5
+import hmac
 
 class draytools:
 	"""DrayTek Vigor password recovery, config & firmware tools"""
-	__version__ = "v0.41"
+	__version__ = "v0.44b"
 	copyright = \
 	"draytools Copyright (C) 2011 AMMOnium <ammonium at mail dot ru>"
 	
 	CFG_RAW = 0
 	CFG_LZO = 1
 	CFG_ENC = 2
+	CFG_NEW = 3
+	CFG_NOT = -1
 
 	verbose = False
 	modelprint = True
 	force_smart_guess = True
+
+	atu = 'WAHOBXEZCLPDYTFQMJRVINSUGK'
+	atl = 'kgusnivrjmqftydplczexbohaw'
+
+#	trans_5C = "".join(chr(x ^ 0x5c) for x in xrange(256))
+#	trans_36 = "".join(chr(x ^ 0x36) for x in xrange(256))
+#	blocksize = md5().block_size
+
+# V2850 3.6.1, 3.6.4
+#	cfg3_hmac_key = "\x67\x56\x67\x23\x12\x54"
+# V2830 3.6.1, 3.6.4
+	cfg3_hmac_key = "\xAA\x33\x30\x31\x32\x39"
 
 	class fs:
 		"""Draytek filesystem utilities"""
@@ -94,7 +110,7 @@ class draytools:
 			if not self.test:
 				ff = file(nfname,'wb')
 			# perform extraction, some file types are not compressed
-			if fs>0:	
+			if fs > 0:	
 				if pp[-1].split('.')[-1].lower() \
 				in ['gif','jpg','cgi','cab','txt','jar']:
 					rawfdata = fdata
@@ -130,6 +146,20 @@ class draytools:
 				fs,rawfs = self.save_file(i)
 			return numfiles
 
+	@staticmethod
+	def is_supported(data):
+		"""Detect if we support config or master password when extracting firmware"""
+		if draytools.atu in data and draytools.atl in data:
+			print "Master key generator is supported for this firmware!"
+		else:
+			print "[WARN]:\tMaster key generator is NOT supported for this firmware!"
+		if 'sys_cfg_dev3' in data and 'sys_cfg_env3' in data:
+			print "[WARN]:\tConfig file encryption is NOT yet supported for this firmware!"
+			
+	@staticmethod
+	def pad_to_zero_v2k_checksum(data):
+		"""Return 4-byte padding to make v2kchecksum(given block + this padding) = zero"""
+		return draytools.v2k_checksum(data + '\x00\x00\x00\x00')
 
 	@staticmethod
 	def v2k_checksum(data):
@@ -162,6 +192,102 @@ class draytools:
 		modelid = data[0x0C:0x0E]
 		return modelid
 
+	@staticmethod 
+	def hmac_md5(key, msg):
+		return unhexlify(hmac.new(key, msg).hexdigest())
+#		"""Generate a HMAC-MD5 (RFC2104)"""
+#		if len(key) > draytools.blocksize:
+#			key = md5(key).digest()
+#		key += chr(0) * (draytools.blocksize - len(key))
+#		o_key_pad = key.translate(draytools.trans_5C)
+#		i_key_pad = key.translate(draytools.trans_36)
+#		return md5(o_key_pad + md5(i_key_pad + msg).digest())
+
+	@staticmethod 
+	def prepare_cfg3_crypto_seed(seed, modelstr):
+		"""Make a crypto seed foir cfg_v3 from modelstr and constant seed"""
+		return seed[0] + modelstr[1] + seed[5] + modelstr[3:]
+
+	@staticmethod
+	def decrypt_cfg_v3(data):
+		"""Decrypt a config file using cfg_v3 aglorithm"""
+		modelstr = "V" + format(unpack(">H", 
+			draytools.get_modelid(data))[0],"04X")
+
+		if draytools.verbose:
+			print 'Model is :\t' + modelstr
+			draytools.modelprint = False
+
+		rdata = data[0x100:]
+
+		tmsg = draytools.prepare_cfg3_crypto_seed(draytools.cfg3_hmac_key, modelstr)
+		thash = draytools.hmac_md5(draytools.cfg3_hmac_key, tmsg)
+		print hexlify(thash)
+		thash = thash[:8]
+		print
+		print hexlify(thash)
+		# construct the three word keys from hash
+		#v0 t1 a0 a3 t0 v1 a1 a2
+		#
+		#t2 = v1|a1|a2|t0
+		#t0 = v0|a0|a3|t1
+		#t3 = NOT nvl(t0,t2)		
+		key_1 = unpack('>L', thash[-3:] + thash[4])[0]
+		print '0x%08.8X' % (key_1) 
+		key_2 = unpack('>L', thash[0] + thash[2:4] + thash[1])[0]
+		print '0x%08.8X' % (key_2)
+		key_3 = not key_2 and key_1 or key_2
+		print '0x%08.8X' % (key_3)
+		key_3 = ~key_3 & 0xFFFFFFFF
+		print '0x%08.8X' % (key_3)
+		print 
+		accum = 0
+		
+		datalenword	= 1 #int(len(rdata)/4)
+			
+		for i in xrange(datalenword):
+			cword = rdata[i*4 : (i+1)*4]
+#			print hexlify(cword)
+			cint = unpack('>L',cword)[0]
+			print 'Encrypted:\t0x%08.8X' % (cint) 
+
+			accum =  (accum + key_3) & 0xFFFFFFFF
+
+			tmp_1 =  (cint  << 24)   & 0xFF000000
+			tmp_2 =  (cint  >> 8)    & 0x00FFFFFF
+			tmp_3 = ~(tmp_1 | tmp_2)
+			tmp_4 =  (tmp_3 + accum) & 0xFFFFFFFF
+			tmp_5 =  (tmp_4 ^ key_1)
+			tmp_6 =  (tmp_5 - key_2) & 0xFFFFFFFF
+
+			res = tmp_6
+
+			print
+			print 'Decrypted:\t0x%08.8X' % (res) 
+
+			good = 0x07030000										
+			print 'Plaintext:\t0x%08.8X' % (good) 
+			print good == res and '!!!SUCCESS!!!' or 'fail'
+			
+
+#		raise Exception('TODO!')
+		sys.exit(-1)
+		return
+
+#	@staticmethod
+#	def decrypt_v3(data, key):
+#		"""Decrypt a data block using give key"""
+#		raise Exception('TODO!')
+#		return
+
+
+	@staticmethod
+	def find_cfg3_hmac_key(data):
+		"""Find a key for CFG V3 encryption inside firmware"""
+		dummy_string = "IP Filter: v3.3.1"
+		raise Exception('TODO!')
+		return
+
 	@staticmethod
 	def decompress_cfg(data):
 		"""Decompress a config file"""
@@ -188,6 +314,7 @@ class draytools:
 
 	@staticmethod
 	def enc(c, key):
+		"""Encrypt a byte using old cfg_v2 algorithm"""
 		c ^= key
 		c -= key
 		c = 0xFF & (c >> 5 | c << 3)
@@ -195,6 +322,7 @@ class draytools:
 
 	@staticmethod
 	def dec(c, key):
+		"""Decrypt a byte using old cfg_v2 algorithm"""
 		c = (c << 5 | c >> 3)
 		c += key
 		c ^= key
@@ -203,7 +331,7 @@ class draytools:
 
 	@staticmethod
 	def decrypt(data, key):
-		"""Decrypt a block of data using given key"""
+		"""Decrypt a block of data using given key and cfg_v2 aglorithm"""
 		rdata = ''
 		for i in xrange(len(data)):
 			rdata += chr(draytools.dec(ord(data[i]), key))
@@ -214,26 +342,37 @@ class draytools:
 	def brute_cfg(data):
 		"""Check all possible keys until data looks like decrypted"""
 		rdata = None
-		key = 0
+		key = -1
 		for i in xrange(256):
 			rdata = draytools.decrypt(data, i)
 			if draytools.smart_guess(rdata) == draytools.CFG_LZO:
 				key = i
 				break
+		if key == -1:
+			if draytools.verbose:
+				print 'Bruteforce failed'
+			raise Exception('Could not decrypt the config file')
 		if draytools.verbose:
 			print 'Found key:\t[0x%02X]' % key
 		return rdata
 
 	@staticmethod
-	def decrypt_cfg(data, bruteforce_key=None):
+	def decrypt_cfg(data):
 		"""Decrypt config, bruteforce if default key fails"""
 		modelstr = "V" + format(unpack(">H", 
 			draytools.get_modelid(data))[0],"04X")
 		if draytools.verbose:
 			print 'Model is :\t' + modelstr
 			draytools.modelprint = False
-		ckey = bruteforce_key or draytools.make_key(modelstr)
+		ckey = draytools.make_key(modelstr)
 		rdata = draytools.decrypt(data[0x100:], ckey)
+		# if the decrypted data does not look good, bruteforce
+		if draytools.verbose:
+			print 'Trying bruteforce'
+		if draytools.smart_guess(rdata) != draytools.CFG_LZO:
+			rdata = draytools.brute_cfg(data[0x100:])
+		elif draytools.verbose:
+			print 'Used key :\t[0x%02X]' % ckey
 		return data[:0x2D] + '\x01' + data[0x2E:0x100] + rdata
 
 	@staticmethod
@@ -245,28 +384,40 @@ class draytools:
 
 	@staticmethod
 	def guess(data):
-		"""Return CFG type - raw(0), compressed(1), encrypted(2)"""
+		"""Return CFG type - raw(0), compressed(1), encrypted(2), new encrypted(3)"""
 		return ord(data[0x2D])
 
 	@staticmethod
-	def smart_guess(data):
+	def smart_guess(data, header=False):
 		"""Guess is the cfg block compressed or not"""
+		if header:
+			has_signature = (data[0x20:0x24] == '\x12\x34\x56\x78')
+			if not has_signature:
+				return draytools.CFG_NOT
+		
+		init_guess = draytools.guess(data)
 		# Uncompressed block is large and has low entropy
 		if draytools.entropy(data) < 1.0 or len(data) > 0x10000:
  			return draytools.CFG_RAW
 		# Compressed block still has pieces of cleartext at the beginning
 		if "Vigor" in data and ("Series" in data or "draytek" in data):
 			return draytools.CFG_LZO
-		return draytools.CFG_ENC
+		# Else we definitely have either new (since 2012) or old encryption
+		return max(draytools.CFG_ENC, header and init_guess or draytools.CFG_NOT)
 
 	@staticmethod
 	def de_cfg(data):
 		"""Get raw config data from raw /compressed/encrypted & comressed"""
 		if draytools.force_smart_guess:
-			g = draytools.smart_guess(data)
+			g = draytools.smart_guess(data,True)
 		else:
 			g = draytools.guess(data)
-		if g == draytools.CFG_RAW:
+
+		if g == draytools.CFG_NOT:
+			if draytools.verbose:
+				print 'File is  :\tnot a config file'
+			return g, data
+		elif g == draytools.CFG_RAW:
 			if draytools.verbose:
 				print 'File is  :\tnot compressed, not encrypted'
 			return g, data
@@ -276,15 +427,13 @@ class draytools:
 			return g, draytools.decompress_cfg(data)
 		elif g == draytools.CFG_ENC:
 			if draytools.verbose:
-				print 'File is  :\tcompressed, encrypted'
-			result = None
-			for i in xrange(256):
-				try:
-					result = draytools.decompress_cfg(draytools.decrypt_cfg(data, i))
-					break
-				except:
-					pass
-			return g, result
+				print 'File is  :\tcompressed, encrypted (old)'
+			return g, draytools.decompress_cfg(draytools.decrypt_cfg(data))
+		elif g == draytools.CFG_NEW:
+			if draytools.verbose:
+				print 'File is  :\tcompressed, encrypted (new)'
+			return g, draytools.decompress_cfg(draytools.decrypt_cfg_v3(data))
+#			raise Exception('New encryption (since 2012) is not supported yet :(')
 
 	@staticmethod
 	def decompress_firmware(data):
@@ -296,11 +445,14 @@ class draytools:
 			sigstart = data.find('\x5A\x5A\xA5\x5A\xA5\x5A')
 		# Compressed FW block found, now decompress
 		if sigstart > 0:
-			if draytools.verbose:
-				print 'Signature found at [0x%08X]' % sigstart
 			lzosizestart = sigstart + 6
 			lzostart = lzosizestart + 4
 			lzosize = unpack('>L', data[lzosizestart:lzostart])[0]
+			if draytools.verbose:
+				print 'Compressed FW signature found at [0x%08X]' % sigstart
+				print 'Compressed FW length found at [0x%08X] = 0x%08X (%d) bytes' % (lzosizestart,lzosize,lzosize)
+				print 'Compressed FW block starts at [0x%08X]' % (lzostart)
+
 			return data[0x100:sigstart+2] \
 				+ pydelzo.decompress('\xF0' + pack(">L",0x1000000) \
 					+ data[lzostart:lzostart+lzosize])
@@ -353,8 +505,6 @@ class draytools:
 	def spkeygen(mac):
 		"""Generate a master key like 'AbCdEfGh' from MAC address"""
 		# stupid translation from MIPS assembly, but works
-		atu = 'WAHOBXEZCLPDYTFQMJRVINSUGK'
-		atl = 'kgusnivrjmqftydplczexbohaw'
 		res = ['\x00'] * 8
 		st = [0] * 8
 		# compute 31*(31*(31*(31*(31*m0+m1)+m2)+m3)+m4)+m5, sign-extend mac bytes
@@ -386,9 +536,9 @@ class draytools:
 		v0 -= a3
 	#	v0 &= 0xFFFFFFFF
 		st[0] = a3
-		res[0] = atu[abs(v0)]
+		res[0] = draytools.atu[abs(v0)]
 		
-		for i in xrange(1,8):
+		for i in xrange(1, 8):
 			v1 = st[i-1]
 			a0 = ord(res[0])
 			t0 = ord(res[1])
@@ -426,9 +576,9 @@ class draytools:
 			a1 += v0
 			v0 &= 0xFFFFFFFF
 			if a0 == 0:
-				v1 = atu[abs(v0)]
+				v1 = draytools.atu[abs(v0)]
 			else:
-				v1 = atl[abs(v0)]
+				v1 = draytools.atl[abs(v0)]
 			res[i] = v1
 			v0 = 0
 		return ''.join(res)
@@ -475,7 +625,8 @@ To extract firmware and filesystem contents
 
 	parser.add_option('-o', '--output',
 		action="store", dest="outfile",
-		help="Output file name, %INPUTFILE%.out if omitted", default="")
+		help="Output file name, %INPUTFILE%.out if omitted", 
+		default="")
 
 	parser.add_option('-t', '--test',
 		action="store_true", dest="test", help=
@@ -484,21 +635,25 @@ To extract firmware and filesystem contents
 
 	parser.add_option('-v', '--verbose',
 		action="store_true", dest="verbose",
-		help="Verbose output", default=False)
+		help="Verbose output", 
+		default=False)
 
 # config file option group for cmdline option parser 
 
 	cfggroup.add_option('-c', '--config',
 		action="store_true", dest="config",
-		help="Decrypt and decompress config", default=False)
+		help="Decrypt and decompress config", 
+		default=False)
 
 	cfggroup.add_option('-d', '--decompress',
 		action="store_true", dest="decompress",
-		help="Decompress an unenrypted config file", default=False)
+		help="Decompress an unenrypted config file", 
+		default=False)
 
 	cfggroup.add_option('-y', '--decrypt',
 		action="store_true", dest="decrypt",
-		help="Decrypt config file", default=False)
+		help="Decrypt config file", 
+		default=False)
 
 	cfggroup.add_option('-p', '--password',
 		action="store_true", dest="password",
@@ -509,15 +664,18 @@ To extract firmware and filesystem contents
 
 	fwgroup.add_option('-f', '--firmware',
 		action="store_true", dest="firmware",
-		help="Decompress firmware", default=False)
+		help="Decompress firmware", 
+		default=False)
 
 	fwgroup.add_option('-F', '--firmware-all',
 		action="store_true", dest="fw_all",
-		help="Decompress firmware and extract filesystem", default=False)
+		help="Decompress firmware and extract filesystem", 
+		default=False)
 
 	fwgroup.add_option('-s', '--fs',
 		action="store_true", dest="fs",
-		help="Extract filesystem", default=False)
+		help="Extract filesystem", 
+		default=False)
 
 	fwgroup.add_option('-O', '--out-dir',
 		action="store", dest="outdir",
@@ -525,7 +683,7 @@ To extract firmware and filesystem contents
 		"Output directory for filesystem contents, \"fs_out\" by default", 
 		default="fs_out")
 
-# miscellaneous option group for cmdline option parser 
+# miscellaneous option group for cmdline option parser
 	mgroup.add_option('-m', '--master-key',
 		action="store", dest="mac",
 		help="Generate FTP master key for given router MAC address. "
@@ -533,6 +691,12 @@ To extract firmware and filesystem contents
 		"master key as password", 
 		default=None)
 
+	mgroup.add_option('-P', '--patch-fw-checksum',
+		action="store_true", dest="patch_fw",
+		help="Patch the firmware code section checksum after edits", 
+		default=None)
+
+# register all option groups an initialize the parser
 
 	parser.add_option_group(cfggroup)
 	parser.add_option_group(fwgroup)
@@ -556,11 +720,11 @@ To extract firmware and filesystem contents
 
 	if len(args) > 1:
 		print '[ERR]:\tToo much arguments, only input file name expected'
-		print 'Run "draytools --help"'
+		print 'Run "draytools --help" to get help'
 		sys.exit(1)
 	elif len(args) < 1 and not options.mac:
 		print '[ERR]:\tInput file name expected'
-		print 'Run "draytools --help"'
+		print 'Run "draytools --help" to get help'
 		sys.exit(1)
 
 # open input file
@@ -582,8 +746,8 @@ To extract firmware and filesystem contents
 		g = -1
 		try:
 			g, outdata = draytools.de_cfg(indata)
-		except LZO_ERROR:
-			print '[ERR]:\tInput file corrupted or not supported'
+		except LZO_ERROR, lastlze:
+			print '[ERR]:\tInput file corrupted or not supported (%s)' % lastlze
 			sys.exit(3)
 		if g == draytools.CFG_RAW:
 			print '[ERR]:\tNothing to do. '\
@@ -604,8 +768,8 @@ To extract firmware and filesystem contents
 	elif options.decrypt:
 		try:
 			outdata = draytools.decrypt_cfg(indata)
-		except LZO_ERROR:
-			print '[ERR]:\tInput file corrupted or not supported'
+		except LZO_ERROR, lastlze:
+			print '[ERR]:\tInput file corrupted or not supported (%s)' % lastlze
 			sys.exit(3)
 
 		cksum = draytools.v2k_checksum(str(outdata))
@@ -626,8 +790,8 @@ To extract firmware and filesystem contents
 	elif options.decompress:
 		try:
 			outdata = draytools.decompress_cfg(indata)
-		except LZO_ERROR:
-			print '[ERR]:\tInput file corrupted or not supported'
+		except LZO_ERROR, lastlze:
+			print '[ERR]:\tInput file corrupted or not supported (%s)' % lastlze
 			sys.exit(3)
 		cksum = draytools.v2k_checksum(str(indata))
 		if options.verbose:
@@ -645,12 +809,12 @@ To extract firmware and filesystem contents
 
 # Command: extract admin credentials from config file
 	if options.password and \
-	not (True in [options.firmware, options.fw_all, options.fs]):
+	not (True in [options.firmware, options.fw_all, options.fs, options.patch_fw]):
 		g = -1
 		try:
 			g, outdata = draytools.de_cfg(indata)
-		except LZO_ERROR:
-			print '[ERR]:\tInput file corrupted or not supported'
+		except LZO_ERROR, lastlze:
+			print '[ERR]:\tInput file corrupted or not supported (%s)' % lastlze
 			sys.exit(3)
 		creds = draytools.get_credentials(outdata)
 		print "Login    :\t" + (creds[0] == "" and "admin" or creds[0])
@@ -661,10 +825,13 @@ To extract firmware and filesystem contents
 	if options.firmware:
 		try:
 			outdata = draytools.decompress_firmware(indata)
+		except LZO_ERROR, lastlze:
+			print '[ERR]:\tInput file corrupted or not supported (%s)' % lastlze
+			sys.exit(3)
 		except:
 			print '[ERR]:\tInput file corrupted or not supported'
 			sys.exit(3)
-
+		draytools.is_supported(outdata)
 		ol = len(outdata)
 		if not options.test:
 			outfile = file(outfname, 'wb')
@@ -679,10 +846,14 @@ To extract firmware and filesystem contents
 	elif options.fw_all:
 		try:
 			outdata = draytools.decompress_firmware(indata)
+		except LZO_ERROR, lastlze:
+			print '[ERR]:\tInput file corrupted or not supported (%s)' % lastlze
+			sys.exit(3)
 		except:
 			print '[ERR]:\tInput file corrupted or not supported'
 			sys.exit(3)
 
+		draytools.is_supported(outdata)
 		ol = len(outdata)
 		if not options.test:
 			outfile = file(outfname, 'wb')
@@ -696,6 +867,9 @@ To extract firmware and filesystem contents
 		try:
 			fss, nf = draytools.decompress_fs_only(indata, outdir, 
 				options.test)
+		except LZO_ERROR, lastlze:
+			print '[ERR]:\tInput file corrupted or not supported (%s)' % lastlze
+			sys.exit(3)
 		except:
 			print '[ERR]:\tInput file corrupted or not supported'
 			sys.exit(3)
@@ -710,6 +884,9 @@ To extract firmware and filesystem contents
 		try:
 			fss, nf = draytools.decompress_fs_only(indata, outdir, 
 				options.test)
+		except LZO_ERROR, lastlze:
+			print '[ERR]:\tInput file corrupted or not supported (%s)' % lastlze
+			sys.exit(3)
 		except:
 			print '[ERR]:\tInput file corrupted or not supported'
 			sys.exit(3)
@@ -718,6 +895,32 @@ To extract firmware and filesystem contents
 			print 'FS extracted to [' + outdir + '], %d files extracted' % nf
 		else:
 			print 'FS extraction test OK, %d files extracted' % nf
+
+# Command: patch the firmware code block checksum
+	elif options.patch_fw:
+		try:
+			code_size = unpack(">L",indata[:4])[0]
+			checksum_offset = code_size - 4
+			padding = draytools.pad_to_zero_v2k_checksum(indata[:checksum_offset])
+			outdata = indata[:checksum_offset] + pack(">L", padding) + indata[checksum_offset+4:]
+			if options.verbose:
+				print 'Offset   = %08X' % checksum_offset
+				print 'Padding  = %08X' % padding
+				print 'Original = %08X' % draytools.v2k_checksum(indata[:code_size])
+				print 'Modified = %08X' % draytools.v2k_checksum(outdata[:code_size])
+			ol = len(outdata)
+		except Exception, e:
+			print '[ERR]:\tInput file corrupted or not supported (%s)' % e
+			sys.exit(3)
+
+		if not options.test:
+			outfile = file(outfname, 'wb')
+			outfile.write(outdata)
+			outfile.close()
+			print outfname + ' written, %d [0x%08X] bytes' % (ol,ol)
+		else:
+			print 'FW checksum patch test OK, ' \
+				'output size %d [0x%08X] bytes' % (ol,ol)
 
 # Command: generate master password
 	elif options.mac is not None:
@@ -732,4 +935,5 @@ To extract firmware and filesystem contents
 		else:
 			print '[ERR]:\tPlease enter a valid MAC address, e.g '\
 			'00-11-22-33-44-55 or 00:DE:AD:BE:EF:00 or 1337babecafe'
-# EOF
+
+# EOF draytools.py

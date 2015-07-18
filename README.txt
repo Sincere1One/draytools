@@ -126,7 +126,7 @@ Firmware operations tested on:
 2.1. SEE INSTALL file for more details.
 2.2. Execute:
 ------------------------------------------------------------------------------
-$ python draytools.py --help
+> draytools.exe --help
 
 Usage: draytools.py [options] file
 DrayTek V2xxx config file and firmware decryption/decompression tools
@@ -169,15 +169,15 @@ Options:
 Examples:
 
 To print login&password from the config file:
-$ python draytools.py -p config.cfg
+> draytools.exe -p config.cfg
 	Login and password will be displayed
 
 To decrypt & decompress the config file:
-$ python draytools.py -c config.cfg
+> draytools.exe -c config.cfg
 	Raw config file "config.cfg.out" will be produced
 
 To extract firmware and filesystem contents
-$ python draytools.py -F firmware.all
+> draytools.exe -F firmware.all
 	Uncompressed firmware will be written to file "firmware.all.out"
 	Filesystem will be extracted to "fs_out" folder.
 

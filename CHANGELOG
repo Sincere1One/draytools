@@ -1,3 +1,12 @@
+0.44b - 19.07.2014
+Fixed bug #18 in master password generation
+
+0.43b - 16.07.2014
+Option to patch valid V2KCheckSum into modified firmware files
+
+0.42b - 09.06.2013
+Detect if we support config or master password when extracting firmware
+
 0.41 - 30.11.2011
 Fixed some null-terminated credentials (rare occurrence)
 

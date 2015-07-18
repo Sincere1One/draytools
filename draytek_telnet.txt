@@ -1,0 +1,73 @@
+To access the draytek telnet commands  you will need to telnet (IP ADDRESS OF YOUR DRAYTEK) 
+
+Setting the DHCP Lease time. 
+
+    srv dhcp leasetime [xxx]
+    Replace [xxx] with the number of seconds eg 21600 = 6 Hours, 43200 = 12 Hours
+
+Log entries
+
+    log -c (Call log . shows call/login attempts for Internet and VPN)
+    log -i (ISDN Log . D/B channel activity)
+    log -p (PPP Log)
+    log -wt (WAN Log)
+    log -f (Filter Log . Data/Call Filter information)
+    log -F (Flushes the log buffer)
+    log -x for packet body hex dump
+
+Turning SIP ALG off
+
+    sys sip_alg 0
+
+SIP AlG Status
+
+    sys sip_alg ?
+    SIP ALG Via Draytek Telnet
+
+Reboot
+
+    sys reboot
+
+Session limit time out (very useful for busy networks with SIP phones) clears down the sessions faster than the 86400 second default
+
+    portmaptime -t 60
+
+MTU
+
+    Show the current setting
+        wan ppp_mss ?
+        or wan mtu ?
+    Set to new setting
+        wan ppp_mss 1458 (nice level for BT ADSL)
+        or wan mtu 1458
+
+Static Route
+
+to see the options type
+
+    ip route add ?
+
+ip route add <dst> <netmask> <gateway> <iface> <rtype>
+<ifno>:0=LAN,3=WAN1,4=WAN2
+<rtype>:[default/static]
+
+To add a route
+
+    ip route add 192.168.100.0 255.255.255.0 192.168.100.1 0 static
+
+Port Mirror
+
+    port sniff on
+        port sniff port p2 (port to listen with your trace tool (wireshark)
+        port sniff txrx p1 (this port we will monitor transmit TX and receive RX)
+        port sniff restart 
+    port sniff status
+
+Shows
+
+    show adsl ?
+    show nat ?
+    show openport ?
+    show portmap ?
+    show status
+
